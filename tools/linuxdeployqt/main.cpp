@@ -63,6 +63,7 @@ int main(int argc, char **argv)
     extern QStringList librarySearchPath;
     extern bool alwaysOwerwriteEnabled;    
     QStringList additionalExecutables;
+    QStringList additionalExecutablesDir;
     bool qmldirArgumentUsed = false;
     bool skipTranslations = false;
     bool skipGlibcCheck = false;
@@ -120,6 +121,13 @@ int main(int argc, char **argv)
                 LogError() << "Could not parse verbose level";
             else
                 logLevel = number;
+        } else if (argument.startsWith(QByteArray("-executable-dir"))) {
+            LogDebug() << "Argument found:" << argument;
+            int index = argument.indexOf('=');
+            if (index == -1)
+                LogError() << "Missing executable folder path";
+            else
+                additionalExecutablesDir << argument.mid(index+1);
         } else if (argument.startsWith(QByteArray("-executable"))) {
             LogDebug() << "Argument found:" << argument;
             int index = argument.indexOf('=');
@@ -191,19 +199,23 @@ int main(int argc, char **argv)
     // https://github.com/AppImage/appimage.github.io/search?q=GLIBC&unscoped_q=GLIBC&type=Issues
     const char *glcv = gnu_get_libc_version ();
     if(skipGlibcCheck) {
-        qInfo() << "WARNING: Not checking glibc on the host system.";
-        qInfo() << "         The resulting AppDir or AppImage may not run on older systems.";
-        qInfo() << "         This mode is unsupported and discouraged.";
-        qInfo() << "         For more information, please see";
-        qInfo() << "         https://github.com/probonopd/linuxdeployqt/issues/340";
+        if(! bundleEverything) {
+            qInfo() << "WARNING: Not checking glibc on the host system.";
+            qInfo() << "         The resulting AppDir or AppImage may not run on older systems.";
+            qInfo() << "         This mode is unsupported and discouraged.";
+            qInfo() << "         For more information, please see";
+            qInfo() << "         https://github.com/probonopd/linuxdeployqt/issues/340";
+        }
      } else {
         // openSUSE Leap 15.0 uses glibc 2.26 and is used on OBS
-        // Ubuntu Xenial (16.04) uses glibc 2.23
-        // Ubuntu Bionic (18.04) uses glibc 2.27
-        if (strverscmp (glcv, "2.28") >= 0) {
+        // Ubuntu Xenial Xerus (16.04) uses glibc 2.23
+        // Ubuntu Bionic Beaver (18.04) uses glibc 2.27
+        // Ubuntu Focal Fossa (20.04) uses glibc 2.31
+        // Ubuntu Jammy Jellyfish (22.04) uses glibc 2.35
+        if (strverscmp (glcv, "2.36") >= 0) {
             qInfo() << "ERROR: The host system is too new.";
             qInfo() << "Please run on a system with a glibc version no newer than what comes with the oldest";
-            qInfo() << "currently still-supported mainstream distribution (Ubuntu Bionic), which is glibc 2.27.";
+            qInfo() << "currently supported mainstream distribution (Ubuntu Jammy Jellyfish), which is glibc 2.35.";
             qInfo() << "This is so that the resulting bundle will work on most still-supported Linux distributions.";
             qInfo() << "For more information, please see";
             qInfo() << "https://github.com/probonopd/linuxdeployqt/issues/340";
@@ -225,6 +237,8 @@ int main(int argc, char **argv)
         qInfo() << "                              searching for libraries.";
         qInfo() << "   -executable=<path>       : Let the given executable use the deployed libraries";
         qInfo() << "                              too";
+        qInfo() << "   -executable-dir=<path>   : Let all the executables in the folder (recursive) use";
+        qInfo() << "                              the deployed libraries too";
         qInfo() << "   -extra-plugins=<list>    : List of extra plugins which should be deployed,";
         qInfo() << "                              separated by comma.";
         qInfo() << "   -no-copy-copyright-files : Skip deployment of copyright files.";
@@ -425,42 +439,12 @@ int main(int argc, char **argv)
         if(candidates.length() == 1){
             iconToBeUsed = candidates.at(0); // The only choice
         } else if(candidates.length() > 1){
-            foreach(QString current, candidates) {
-                if(current.contains("256")){
-                    iconToBeUsed = current;
-                    continue;
-                }
-                if(current.contains("128")){
-                    iconToBeUsed = current;
-                    continue;
-                }
-                if(current.contains("svg")){
-                    iconToBeUsed = current;
-                    continue;
-                }
-                if(current.contains("svgz")){
-                    iconToBeUsed = current;
-                    continue;
-                }
-                if(current.contains("512")){
-                    iconToBeUsed = current;
-                    continue;
-                }
-                if(current.contains("1024")){
-                    iconToBeUsed = current;
-                    continue;
-                }
-                if(current.contains("64")){
-                    iconToBeUsed = current;
-                    continue;
-                }
-                if(current.contains("48")){
-                    iconToBeUsed = current;
-                    continue;
-                }
-                if(current.contains("xpm")){
-                    iconToBeUsed = current;
-                    continue;
+            const QStringList iconPriorities{"256", "128", "svg", "svgz", "512", "1024", "64", "48", "xpm"};
+            foreach (const QString &iconPriority, iconPriorities) {
+                const auto filteredCandidates = candidates.filter(iconPriority);
+                if (!filteredCandidates.isEmpty()) {
+                    iconToBeUsed = filteredCandidates.first();
+                    break;
                 }
             }
         }
@@ -523,6 +507,19 @@ int main(int argc, char **argv)
         qWarning() << "WARNING: Excluding the following libraries might break the AppImage. Please double-check the list:" << excludeLibs;
     }
 
+    // recurse folders for additional executables
+    for(const auto& folder : additionalExecutablesDir) {
+      QString directoryToBeSearched = QDir::cleanPath(QFileInfo(folder).absolutePath());
+      QDirIterator it(directoryToBeSearched, QDirIterator::Subdirectories);
+      while (it.hasNext()) {
+        it.next();
+        if((it.fileInfo().isFile()) && (it.fileInfo().isExecutable())){
+          qDebug() << "Found additional executable:" << it.fileInfo().canonicalFilePath();
+          additionalExecutables << it.fileInfo().absoluteFilePath();
+        }
+      }
+    }
+
     DeploymentInfo deploymentInfo = deployQtLibraries(appDirPath, additionalExecutables,
                                                       qmakeExecutable);
 
@@ -541,7 +538,7 @@ int main(int argc, char **argv)
         // Update deploymentInfo.deployedLibraries - the QML imports
         // may have brought in extra libraries as dependencies.
         deploymentInfo.deployedLibraries += findAppLibraries(appDirPath);
-        deploymentInfo.deployedLibraries = deploymentInfo.deployedLibraries.toSet().toList();
+        deploymentInfo.deployedLibraries.removeDuplicates();
     }
 
     deploymentInfo.usedModulesMask = 0;
